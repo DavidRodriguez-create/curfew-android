@@ -1,15 +1,16 @@
 # Curfew
 
-An Android app that blocks Instagram, YouTube, TikTok, Chrome and friends after a chosen hour,
-where **you are not the one who can turn it off**.
+An Android app that blocks Instagram, YouTube, TikTok, Chrome and friends after a chosen hour.
 
-Self-control apps fail because the person they are restraining also holds the off switch. Curfew
-moves the unlock authority to a second person you trust: they hold half of a shared secret and
-generate a short-lived code from an offline PWA. No server, no account, no monthly cost, and no
-network call at unlock time.
+Self-control apps fail because the person they are restraining also holds the off switch. The
+premise here is to move the unlock authority to a second person you trust — no server, no
+account, no monthly cost, and no network call at unlock time.
 
-> **This repository is at v0.1 — phase 1 of that plan.** The blocking works; the unlock codes do
-> not exist yet. See [Roadmap](#roadmap).
+> **v0.1 is the enforcement half of that premise, and only that half.**
+> The schedule, the blocklist and the shield work. There is no pairing and no unlock code yet,
+> so today the only escape hatch is the [panic override](#the-panic-override) — a cooldown and a
+> log entry, not another person's approval. The partner-gated unlock is
+> [designed but not built](#where-this-is-going).
 
 Kotlin · Jetpack Compose · minSdk 26 · targetSdk 35 · **no network code anywhere in the app**.
 
@@ -120,28 +121,40 @@ adb logcat -s CurfewBlocker CurfewOverlay CurfewFgs
 
 ---
 
-## Roadmap
+## Where this is going
 
-- **v0.1 — this release.** Schedule, blocklist, overlay, panic override.
-- **v0.2** — QR pairing and the shared-secret unlock. A random 160-bit secret is generated on the
-  phone and scanned into an offline PWA on the approver's device. Granting access computes
-  `truncate6(HMAC-SHA1(S, T_bytes || duration_byte))` over a 30-second time step, so the *duration*
-  is authenticated too and a 15-minute code cannot be passed off as a 60-minute one. Used
-  `(T, duration)` pairs go into a replay blacklist. Plus `ClockGuard`: `currentTimeMillis()` versus
-  `elapsedRealtime()` drift since boot, refusing to unlock past 60 seconds of skew.
-- **v0.3** — local DNS `VpnService` blocklist, per-app schedules, stats from `UsageStatsManager`.
-- **v1.0** — documented device-owner install path, exportable log.
+**Nothing below is implemented.** This is the design that v0.1 was built to grow into, written
+down so the shape of the current code makes sense — not a commitment to ship any of it.
+
+**The partner-gated unlock.** Rather than a backend with accounts and push notifications, a
+shared secret and an HMAC: a random 160-bit secret generated on the phone, shown as a QR code and
+scanned once, in person, into an offline PWA on the approver's device. Granting access would
+compute `truncate6(HMAC-SHA1(S, T_bytes || duration_byte))` over a 30-second time step. Because
+the duration is inside the MAC, it is authenticated too — a 15-minute code cannot be passed off
+as a 60-minute one. Used `(T, duration)` pairs go into a replay blacklist so a screenshot of a
+code is worthless even inside its own window. The appeal is that it needs no server and works in
+airplane mode; the point is that the cost of unlocking becomes a conversation rather than a tap.
+
+**`ClockGuard`.** The moment codes are time-based, the system clock becomes an attack surface.
+Compare `currentTimeMillis()` against `elapsedRealtime()` drift since boot and refuse to unlock
+past about a minute of skew.
+
+**Further out.** A local DNS `VpnService` filter, so a domain is blocked inside every browser
+rather than only as a whole app; per-app schedules; usage stats from `UsageStatsManager`; a
+documented device-owner install path, which is the only configuration that survives an
+uninstall.
 
 ## Known limits of v0.1
 
 - **Turning off the accessibility service in Settings** defeats it. Detecting and overlaying the
-  accessibility settings screen is v0.2.
+  accessibility settings screen is not implemented.
 - **Uninstalling** defeats it. That is what device owner mode is for.
 - **Browsers** are blocked only as whole apps. Blocking a single domain inside any browser needs
   the local DNS filter.
 - **The clock is trusted.** `ClockGuard` arrives with the unlock codes, where a spoofable clock
   would actually buy you something.
-- **No unlock codes yet.** The shared-secret scheme and the approver's PWA are v0.2.
+- **No unlock codes.** The shared-secret scheme and the approver's PWA are designed but unbuilt,
+  so nobody but you currently gates the override.
 
 ## Design notes
 
@@ -155,7 +168,7 @@ A few decisions that are not obvious from the code:
   `WindowManager` window needs a hand-rolled `LifecycleOwner` and `SavedStateRegistryOwner`. Not
   worth the failure mode at 03:00.
 - **SharedPreferences, not Room.** Every policy read happens on the accessibility service's main
-  loop and must never block. Room arrives with v0.2, when there is actually relational state
+  loop and must never block. Room would earn its place once there is actually relational state
   (grants, replay windows) to store.
 - **`start == end` means no window, not all day.** An accidental equal pair should fail open
   rather than lock the phone forever.
