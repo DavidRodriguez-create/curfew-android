@@ -1,0 +1,13 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Padlock inside the 72dp adaptive-icon safe zone -->
+    <path
+        android:fillColor="#7DD3FC"
+        android:pathData="M54,26c-8.8,0 -16,7.2 -16,16v8h8v-8c0,-4.4 3.6,-8 8,-8s8,3.6 8,8v8h8v-8C70,33.2 62.8,26 54,26z" />
+    <path
+        android:fillColor="#7DD3FC"
+        android:pathData="M72,52H36c-2.2,0 -4,1.8 -4,4v22c0,2.2 1.8,4 4,4h36c2.2,0 4,-1.8 4,-4V56C76,53.8 74.2,52 72,52zM56,70.9V75h-4v-4.1c-1.8,-0.8 -3,-2.6 -3,-4.6c0,-2.8 2.2,-5 5,-5s5,2.2 5,5C59,68.4 57.8,70.2 56,70.9z" />
+</vector>

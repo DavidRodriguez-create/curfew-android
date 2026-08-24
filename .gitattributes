@@ -1,0 +1,11 @@
+# The Gradle wrapper script is executed by /bin/sh on CI and on Linux/macOS checkouts.
+# CRLF endings break the shebang there on Windows checkouts with core.autocrlf=true.
+gradlew text eol=lf
+*.sh text eol=lf
+gradlew.bat text eol=crlf
+*.bat text eol=crlf
+
+*.jar binary
+*.apk binary
+*.keystore binary
+*.png binary

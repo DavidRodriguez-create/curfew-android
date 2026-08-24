@@ -1,0 +1,21 @@
+# Gradle / Android build output. `build/` (not `/build`) so app/build is covered too.
+.gradle/
+build/
+.kotlin/
+/captures
+.externalNativeBuild
+.cxx
+
+# Local SDK path and signing material - never committed.
+local.properties
+*.keystore
+*.jks
+
+# Built artifacts ship as release assets, not as git objects.
+*.apk
+*.aab
+
+# IDE
+*.iml
+/.idea/
+.DS_Store
