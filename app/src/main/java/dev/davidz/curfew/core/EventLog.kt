@@ -1,9 +1,9 @@
 package dev.davidz.curfew.core
 
 /**
- * A tiny append-only activity log. Phase 2 replaces this with Room and syncs it into the PWA;
- * for the MVP a capped list of pipe-separated lines in SharedPreferences is enough, and it is
- * what makes the panic override cost something — it is visible after the fact.
+ * A tiny append-only activity log: a capped list of pipe-separated lines in SharedPreferences.
+ * It is what makes an override cost something — panic or approved, it is visible after the fact,
+ * and v0.2 adds the refused codes and the clock-tampering notes to the same ledger.
  */
 enum class LogType(val label: String) {
     ARMED("Armed"),
@@ -15,6 +15,12 @@ enum class LogType(val label: String) {
     PANIC_CANCELLED("Panic override abandoned"),
     PANIC_GRANTED("Panic override used"),
     OVERRIDE_EXPIRED("Override expired"),
+    PAIRED("Approver paired"),
+    UNPAIRED("Pairing removed"),
+    CODE_GRANTED("Unlocked by approver"),
+    CODE_REJECTED("Unlock code refused"),
+    CLOCK_TAMPERED("Clock tampering detected"),
+    SETTINGS_SHIELDED("Accessibility settings covered"),
     NOTE("Note"),
     ;
 

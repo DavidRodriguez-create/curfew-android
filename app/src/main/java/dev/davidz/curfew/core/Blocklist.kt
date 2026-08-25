@@ -1,5 +1,7 @@
 package dev.davidz.curfew.core
 
+import android.content.Context
+
 /**
  * The MVP blocklist is a fixed, curated candidate list — no "pick any app" browser yet.
  * Only the entries actually installed on the device are ever shown or enforced.
@@ -44,4 +46,29 @@ object Blocklist {
     private val byPkg: Map<String, CandidateApp> = CANDIDATES.associateBy { it.pkg }
 
     fun fallbackLabelFor(pkg: String): String = byPkg[pkg]?.fallbackLabel ?: pkg
+
+    /**
+     * Candidates that are actually installed. Cached because [Policy.snapshot] reads this on the
+     * accessibility service's tick loop, and PackageManager is far too slow to ask every 2s.
+     */
+    @Volatile
+    private var installedCache: Set<String>? = null
+
+    fun installedPackages(context: Context): Set<String> =
+        installedCache ?: refreshInstalled(context)
+
+    /** Recompute the installed set. Cheap enough to call whenever the UI or the service starts. */
+    fun refreshInstalled(context: Context): Set<String> {
+        val pm = context.packageManager
+        val found = CANDIDATES.mapNotNull { candidate ->
+            try {
+                pm.getApplicationInfo(candidate.pkg, 0)
+                candidate.pkg
+            } catch (t: Throwable) {
+                null
+            }
+        }.toSet()
+        installedCache = found
+        return found
+    }
 }

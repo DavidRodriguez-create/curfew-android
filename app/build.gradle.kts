@@ -12,8 +12,8 @@ android {
         applicationId = "dev.davidz.curfew"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0-mvp"
+        versionCode = 2
+        versionName = "0.2.0"
     }
 
     buildTypes {
@@ -49,6 +49,7 @@ dependencies {
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
+    implementation(libs.zxing.core)
     debugImplementation(libs.androidx.ui.tooling)
 
     testImplementation(libs.junit)

@@ -2,13 +2,11 @@
 
 package dev.davidz.curfew.ui
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -48,7 +46,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -61,8 +58,10 @@ import dev.davidz.curfew.core.LogEntry
 import dev.davidz.curfew.core.LogType
 import dev.davidz.curfew.core.PanicState
 import dev.davidz.curfew.core.Phase
+import dev.davidz.curfew.core.Pairing
 import dev.davidz.curfew.core.Policy
 import dev.davidz.curfew.core.ScheduleEngine
+import dev.davidz.curfew.core.UnlockOutcome
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.time.Instant
@@ -83,19 +82,44 @@ fun CurfewScreen() {
     var blocked by remember { mutableStateOf(prefs.blockedPackages) }
     var log by remember { mutableStateOf(prefs.log()) }
     var picking by remember { mutableStateOf<TimeTarget?>(null) }
+    var pairedAt by remember { mutableStateOf(Pairing.pairedAt(context)) }
     val apps = remember { Setup.installedCandidates(context) }
+
+    // Plaintext secrets held only while a dialog is on screen, and zeroed when it closes.
+    var freshSecret by remember { mutableStateOf<ByteArray?>(null) }
+    var recovery by remember { mutableStateOf<String?>(null) }
+    var confirmRepair by remember { mutableStateOf(false) }
+    var unlockMessage by remember { mutableStateOf<Pair<String, Boolean>?>(null) }
 
     fun refresh() {
         snap = Policy.snapshot(context)
         setup = Setup.items(context)
         blocked = prefs.blockedPackages
         log = prefs.log()
+        pairedAt = Pairing.pairedAt(context)
+        // Don't let last night's "code refused" be the first thing on screen tomorrow.
+        if (snap.phase != Phase.ENFORCING) unlockMessage = null
     }
 
     fun deny() {
         scope.launch {
             snackbar.showSnackbar("Locked while the curfew is running. Use the override.")
         }
+    }
+
+    fun say(text: String) {
+        scope.launch { snackbar.showSnackbar(text) }
+    }
+
+    fun pair() {
+        val secret = Pairing.generate(context)
+        if (secret == null) {
+            say("The Android Keystore refused to store a secret on this device.")
+            return
+        }
+        Policy.notePaired(context)
+        freshSecret = secret
+        refresh()
     }
 
     LaunchedEffect(Unit) {
@@ -142,6 +166,18 @@ fun CurfewScreen() {
                 SetupCard(pending) { item -> Setup.launch(context, item.intent(context)) }
             }
 
+            // Only worth showing when there is something to unlock.
+            if (snap.paired && snap.phase == Phase.ENFORCING) {
+                UnlockCard(
+                    snap = snap,
+                    message = unlockMessage,
+                    onSubmit = { code ->
+                        unlockMessage = describe(Policy.redeemCode(context, code))
+                        refresh()
+                    },
+                )
+            }
+
             ScheduleCard(
                 snap = snap,
                 locked = locked,
@@ -161,6 +197,24 @@ fun CurfewScreen() {
                 },
             )
 
+            PairingCard(
+                snap = snap,
+                pairedAt = pairedAt,
+                locked = !Policy.canChangePairing(snap),
+                onPair = { pair() },
+                onShowRecovery = {
+                    val secret = Pairing.secret(context)
+                    if (secret == null) {
+                        say("The stored secret could not be read back. Re-pair to fix it.")
+                    } else {
+                        recovery = Pairing.recoveryString(secret)
+                        secret.fill(0)
+                    }
+                },
+                onUnpair = { confirmRepair = true },
+                onLocked = { deny() },
+            )
+
             ArmCard(
                 armed = snap.armed,
                 locked = locked,
@@ -169,7 +223,10 @@ fun CurfewScreen() {
                         deny()
                     } else {
                         prefs.armed = armed
-                        prefs.append(if (armed) LogType.ARMED else LogType.DISARMED)
+                        prefs.append(
+                            if (armed) LogType.ARMED else LogType.DISARMED,
+                            now = Policy.effectiveNow(context),
+                        )
                         refresh()
                     }
                 },
@@ -187,13 +244,39 @@ fun CurfewScreen() {
             )
 
             Text(
-                text = "v0.1 MVP - fixed schedule, no unlock codes yet. Phase 2 adds the paired " +
-                    "TOTP unlock.",
+                text = "v0.2 - paired unlock codes. Nothing leaves the phone: the approver's " +
+                    "side computes the same code from the same secret.",
                 color = TextFaint,
                 fontSize = 12.sp,
                 modifier = Modifier.padding(bottom = 24.dp),
             )
         }
+    }
+
+    freshSecret?.let { secret ->
+        PairDialog(secret = secret) {
+            secret.fill(0)
+            freshSecret = null
+        }
+    }
+
+    recovery?.let { text ->
+        RecoveryDialog(recovery = text) { recovery = null }
+    }
+
+    if (confirmRepair) {
+        ConfirmDialog(
+            title = "Re-pair?",
+            body = "The current secret is thrown away and a new one generated. Every code the " +
+                "approver's app can produce stops working until they scan the new QR.",
+            confirmLabel = "Re-pair",
+            onConfirm = {
+                confirmRepair = false
+                Policy.unpair(context)
+                pair()
+            },
+            onDismiss = { confirmRepair = false },
+        )
     }
 
     picking?.let { target ->
@@ -209,6 +292,18 @@ fun CurfewScreen() {
             },
         )
     }
+}
+
+/** What each [UnlockOutcome] says out loud, and whether it reads as a failure. */
+private fun describe(outcome: UnlockOutcome): Pair<String, Boolean> = when (outcome) {
+    is UnlockOutcome.Granted -> "Unlocked for ${outcome.minutes} minutes." to false
+    UnlockOutcome.Replayed -> "That code has already been used. Ask for a fresh one." to true
+    UnlockOutcome.Rejected -> "That code is not valid right now." to true
+    is UnlockOutcome.RateLimited -> "Too many wrong codes. Try again in %d:%02d."
+        .format(outcome.secondsLeft / 60, outcome.secondsLeft % 60) to true
+    is UnlockOutcome.ClockTampered ->
+        "The phone clock has been changed, so codes cannot be checked." to true
+    UnlockOutcome.NotPaired -> "No approver is paired." to true
 }
 
 // ---- sections ----------------------------------------------------------------------------
@@ -269,7 +364,7 @@ private fun StatusCard(
         )
     }
 
-    Section {
+    PanelCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
                 Modifier
@@ -335,7 +430,7 @@ private fun StatusCard(
 
 @Composable
 private fun SetupCard(pending: List<SetupItem>, onOpen: (SetupItem) -> Unit) {
-    Section(border = Warn) {
+    PanelCard(border = Warn) {
         Text("Setup", color = Warn, fontSize = 13.sp, letterSpacing = 2.sp)
         Spacer(Modifier.height(4.dp))
         pending.forEachIndexed { index, item ->
@@ -360,8 +455,8 @@ private fun SetupCard(pending: List<SetupItem>, onOpen: (SetupItem) -> Unit) {
 
 @Composable
 private fun ScheduleCard(snap: CurfewSnapshot, locked: Boolean, onEdit: (TimeTarget) -> Unit) {
-    Section {
-        SectionTitle("Schedule")
+    PanelCard {
+        PanelTitle("Schedule")
         TimeRow("Starts", snap.startMinute) { onEdit(TimeTarget.START) }
         Spacer(Modifier.height(8.dp))
         TimeRow("Ends", snap.endMinute) { onEdit(TimeTarget.END) }
@@ -408,15 +503,15 @@ private fun AppsCard(
     blocked: Set<String>,
     onToggle: (String, Boolean) -> Unit,
 ) {
-    Section {
-        SectionTitle("Blocked apps")
+    PanelCard {
+        PanelTitle("Blocked apps")
         if (apps.isEmpty()) {
             Text(
                 "None of the apps on the built-in list are installed.",
                 color = TextMuted,
                 fontSize = 14.sp,
             )
-            return@Section
+            return@PanelCard
         }
         apps.forEach { app ->
             Row(
@@ -445,7 +540,7 @@ private fun AppsCard(
 
 @Composable
 private fun ArmCard(armed: Boolean, locked: Boolean, onChange: (Boolean) -> Unit) {
-    Section {
+    PanelCard {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -479,13 +574,13 @@ private val LOG_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("EEE HH:
 
 @Composable
 private fun LogCard(entries: List<LogEntry>, canClear: Boolean, onClear: () -> Unit) {
-    Section {
+    PanelCard {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            SectionTitle("Activity", bottomSpace = 0.dp)
+            PanelTitle("Activity", bottomSpace = 0.dp)
             if (canClear && entries.isNotEmpty()) {
                 TextButton(onClick = onClear) { Text("Clear", color = TextFaint) }
             }
@@ -493,7 +588,7 @@ private fun LogCard(entries: List<LogEntry>, canClear: Boolean, onClear: () -> U
         Spacer(Modifier.height(6.dp))
         if (entries.isEmpty()) {
             Text("Nothing yet.", color = TextMuted, fontSize = 14.sp)
-            return@Section
+            return@PanelCard
         }
         entries.take(15).forEach { entry ->
             Row(Modifier.padding(vertical = 3.dp)) {
@@ -525,24 +620,6 @@ private fun colorForLog(type: LogType): Color = when (type) {
 }
 
 // ---- shared bits -------------------------------------------------------------------------
-
-@Composable
-private fun Section(border: Color? = null, content: @Composable ColumnScope.() -> Unit) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = Surface1),
-        border = border?.let { BorderStroke(1.dp, it) },
-    ) {
-        Column(Modifier.padding(16.dp), content = content)
-    }
-}
-
-@Composable
-private fun SectionTitle(text: String, bottomSpace: Dp = 10.dp) {
-    Text(text, color = TextMuted, fontSize = 12.sp, letterSpacing = 2.sp)
-    Spacer(Modifier.height(bottomSpace))
-}
 
 @Composable
 private fun TimePickerDialog(

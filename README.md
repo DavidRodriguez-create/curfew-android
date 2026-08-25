@@ -6,19 +6,23 @@ Self-control apps fail because the person they are restraining also holds the of
 premise here is to move the unlock authority to a second person you trust — no server, no
 account, no monthly cost, and no network call at unlock time.
 
-> **v0.1 is the enforcement half of that premise, and only that half.**
-> The schedule, the blocklist and the shield work. There is no pairing and no unlock code yet,
-> so today the only escape hatch is the [panic override](#the-panic-override) — a cooldown and a
-> log entry, not another person's approval. The partner-gated unlock is
-> [designed but not built](#where-this-is-going).
+> **v0.2 builds both halves of that premise.** Pairing, code verification, replay protection,
+> the clock guard and the keypad on the shield are all built and running here; the other end —
+> the small offline web app that turns the shared secret into a six-digit code — lives in
+> [curfew-approver](https://github.com/DavidRodriguez-create/curfew-approver) and is served
+> from <https://davidrodriguez-create.github.io/curfew-approver/>. The whole loop has been run
+> end to end: paired by QR, a code granted on the second device, a live shield unlocked for the
+> authenticated duration. The [panic override](#the-panic-override) remains the sanctioned
+> escape hatch when the approver is unreachable.
 
 Kotlin · Jetpack Compose · minSdk 26 · targetSdk 35 · **no network code anywhere in the app**.
 
 ---
 
-## What v0.1 does
+## What it does
 
-A schedule, a blocklist, and a full-screen shield over anything on it.
+A schedule, a blocklist, a full-screen shield over anything on it, and a
+[six-digit unlock](#the-partner-gated-unlock) only someone else can produce.
 
 | Piece | File |
 |---|---|
@@ -30,13 +34,62 @@ A schedule, a blocklist, and a full-screen shield over anything on it.
 | Curated candidate app list | [Blocklist.kt](app/src/main/java/dev/davidz/curfew/core/Blocklist.kt) |
 | State + capped activity log | [CurfewPrefs.kt](app/src/main/java/dev/davidz/curfew/core/CurfewPrefs.kt) |
 | Compose control surface | [CurfewScreen.kt](app/src/main/java/dev/davidz/curfew/ui/CurfewScreen.kt) |
+| Duration-bound TOTP verifier, against the RFC 4226 vectors | [TotpVerifier.kt](app/src/main/java/dev/davidz/curfew/core/TotpVerifier.kt) |
+| Keystore-wrapped shared secret, QR and recovery string | [Pairing.kt](app/src/main/java/dev/davidz/curfew/core/Pairing.kt) |
+| Refuses a code that was already spent | [ReplayWindow.kt](app/src/main/java/dev/davidz/curfew/core/ReplayWindow.kt) |
+| Catches the system clock being moved | [ClockGuard.kt](app/src/main/java/dev/davidz/curfew/core/ClockGuard.kt) |
+| Recognises the accessibility settings screen | [SettingsGuard.kt](app/src/main/java/dev/davidz/curfew/core/SettingsGuard.kt) |
+| Six-digit entry drawn on the shield itself | [UnlockKeypad.kt](app/src/main/java/dev/davidz/curfew/service/UnlockKeypad.kt) |
 
 ### The four states
 
 - **Disarmed** — master switch off, nothing enforced.
 - **Idle** — armed, outside the window.
 - **Enforcing** — inside the window; blocked apps get the shield; **settings are locked**.
-- **Override** — a panic grant is running; blocking is suspended and settings unlock again.
+- **Override** — a grant is running, panic or approved; blocking is suspended and settings
+  unlock again. The log records which kind it was and for how long.
+
+### The partner-gated unlock
+
+A random 160-bit secret is generated on the phone, wrapped by a non-extractable Android Keystore
+key, and shown once as a QR code plus a typed base32 fallback. The approver scans it, in person.
+From then on their device can compute
+
+```
+code = truncate6( HMAC-SHA1( S, T || duration_byte ) )      T = floor(unix_seconds / 30)
+```
+
+and read six digits down the phone. Because the duration is inside the MAC it is authenticated
+too: a 15-minute code cannot be presented as a 60-minute one — they are different messages and
+produce unrelated digits. Verification sweeps `T-1, T, T+1` against every offered duration, so
+the two clocks do not have to agree on the second.
+
+Around that:
+
+- **Replay.** Spent `(T, duration)` pairs are refused even inside their own window, so a
+  screenshot of a code taken in front of the shield is worth nothing.
+- **The clock.** Wall-clock time is attacker-controlled; `elapsedRealtime()` is not. The two are
+  anchored together while nothing is being enforced and compared from then on. Past a minute of
+  drift the phone stops believing its own clock, runs the schedule off the monotonic projection
+  instead, and refuses codes until the anchor can be retaken. Winding the clock to 08:00 in
+  front of the shield buys nothing.
+- **Rate limiting.** Three free attempts, then a lockout doubling from 30 seconds to a
+  15-minute cap.
+- **Recovery.** The secret can be shown again at any time outside a curfew, so a wiped browser
+  on the approver's side is not fatal. Re-pairing is refused mid-curfew — otherwise the escape
+  is trivial: pair to a secret you generated yourself and approve your own unlock.
+
+Entry is a drawn keypad rather than a text field, because the shield window is
+`FLAG_NOT_FOCUSABLE` and has to stay that way — making it focusable to summon a keyboard would
+stop the back key reaching the app underneath.
+
+**The approver's app** is [curfew-approver](https://github.com/DavidRodriguez-create/curfew-approver):
+a static page — WebCrypto HMAC-SHA1, a service worker for offline, the secret in local storage —
+served from <https://davidrodriguez-create.github.io/curfew-approver/> and installable to the
+home screen. The two codebases share no code, so agreement is enforced by vectors rather than by
+reuse: nine `(counter, duration) -> code` pairs are asserted verbatim on both sides, here in
+`ApproverContractTest` and there in `test/vectors.test.mjs`. Change either side and run both
+suites.
 
 ### The panic override
 
@@ -57,7 +110,7 @@ rest of the app decorative.
 
 ## How blocking works on Android without root
 
-Three mechanisms exist, and only three. v0.1 implements the first.
+Three mechanisms exist, and only three. Curfew implements the first.
 
 | Mechanism | What it buys | Cost |
 |---|---|---|
@@ -80,7 +133,7 @@ Requires Android Studio (Ladybug or newer) or a local Android SDK with **platfor
 The APK lands in `app/build/outputs/apk/debug/app-debug.apk`. Prebuilt debug APKs are attached to
 each [release](../../releases).
 
-Unit tests for the schedule maths:
+Unit tests — schedule maths, base32, the RFC 4226 vectors, replay, the clock guard:
 
 ```bash
 ./gradlew testDebugUnitTest
@@ -123,38 +176,31 @@ adb logcat -s CurfewBlocker CurfewOverlay CurfewFgs
 
 ## Where this is going
 
-**Nothing below is implemented.** This is the design that v0.1 was built to grow into, written
-down so the shape of the current code makes sense — not a commitment to ship any of it.
-
-**The partner-gated unlock.** Rather than a backend with accounts and push notifications, a
-shared secret and an HMAC: a random 160-bit secret generated on the phone, shown as a QR code and
-scanned once, in person, into an offline PWA on the approver's device. Granting access would
-compute `truncate6(HMAC-SHA1(S, T_bytes || duration_byte))` over a 30-second time step. Because
-the duration is inside the MAC, it is authenticated too — a 15-minute code cannot be passed off
-as a 60-minute one. Used `(T, duration)` pairs go into a replay blacklist so a screenshot of a
-code is worthless even inside its own window. The appeal is that it needs no server and works in
-airplane mode; the point is that the cost of unlocking becomes a conversation rather than a tap.
-
-**`ClockGuard`.** The moment codes are time-based, the system clock becomes an attack surface.
-Compare `currentTimeMillis()` against `elapsedRealtime()` drift since boot and refuse to unlock
-past about a minute of skew.
+**Nothing below is implemented.** Written down so the shape of the current code makes sense —
+not a commitment to ship any of it.
 
 **Further out.** A local DNS `VpnService` filter, so a domain is blocked inside every browser
 rather than only as a whole app; per-app schedules; usage stats from `UsageStatsManager`; a
 documented device-owner install path, which is the only configuration that survives an
 uninstall.
 
-## Known limits of v0.1
+## Known limits
 
-- **Turning off the accessibility service in Settings** defeats it. Detecting and overlaying the
-  accessibility settings screen is not implemented.
+- **A latched clock skew locks the approver out.** If the wall clock moves more than a minute
+  against `elapsedRealtime` mid-curfew, every approver code is refused until the anchor is
+  retaken — which only happens on a reboot or outside the window. The shield says "clock
+  tampered", but not that it is unrecoverable until morning. The panic override is the way
+  through. Widening or re-anchoring is an open decision for v1.0.
+- **The camera path is unproven.** The QR itself decodes — the vendored jsQR read a real
+  screenshot of the phone's code and recovered the exact secret — but no phone camera has yet
+  read it off a screen. The typed recovery string is the fallback and works.
 - **Uninstalling** defeats it. That is what device owner mode is for.
 - **Browsers** are blocked only as whole apps. Blocking a single domain inside any browser needs
   the local DNS filter.
-- **The clock is trusted.** `ClockGuard` arrives with the unlock codes, where a spoofable clock
-  would actually buy you something.
-- **No unlock codes.** The shared-secret scheme and the approver's PWA are designed but unbuilt,
-  so nobody but you currently gates the override.
+- **Safe Mode still wins.** The shield over the accessibility settings screen raises the cost of
+  switching the blocker off. It is not a lock and does not pretend to be.
+- **Never run on physical hardware.** Everything here is verified on an Android 15 emulator.
+  What that cannot answer is whether an OEM battery manager kills the service overnight.
 
 ## Design notes
 
@@ -168,8 +214,14 @@ A few decisions that are not obvious from the code:
   `WindowManager` window needs a hand-rolled `LifecycleOwner` and `SavedStateRegistryOwner`. Not
   worth the failure mode at 03:00.
 - **SharedPreferences, not Room.** Every policy read happens on the accessibility service's main
-  loop and must never block. Room would earn its place once there is actually relational state
-  (grants, replay windows) to store.
+  loop and must never block. The replay window looked like the thing that would finally justify
+  a database and turned out not to be — a few dozen short strings that expire after two minutes.
+  Room waits for state that is actually relational.
+- **The settings shield has to be an accessibility overlay.** The accessibility settings screen
+  calls `setHideOverlayWindows(true)`, so the framework force-hides every ordinary overlay drawn
+  over it: `addView` succeeds, the window exists, and nothing appears.
+  `TYPE_ACCESSIBILITY_OVERLAY` is the exemption, so that shield always takes it while an app
+  shield keeps preferring `TYPE_APPLICATION_OVERLAY`.
 - **`start == end` means no window, not all day.** An accidental equal pair should fail open
   rather than lock the phone forever.
 

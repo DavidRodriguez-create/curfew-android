@@ -8,6 +8,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import dev.davidz.curfew.core.Blocklist
 import dev.davidz.curfew.service.CurfewForegroundService
 import dev.davidz.curfew.ui.CurfewScreen
 import dev.davidz.curfew.ui.CurfewTheme
@@ -16,6 +17,12 @@ class MainActivity : ComponentActivity() {
 
     private val requestNotifications =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* status card reflects it */ }
+
+    override fun onResume() {
+        super.onResume()
+        // The user may have installed or removed a candidate since we last looked.
+        Blocklist.refreshInstalled(this)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
